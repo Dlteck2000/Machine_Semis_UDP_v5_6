@@ -1,41 +1,45 @@
+// Controleur de semis pour AgOpenGPS - Seed monitor for AgOpenGPS
+// Author: Damien Loisel
+// Copyright: GPL V2
+
 #include "EtherCard_AOG.h"
 #include <IPAddress.h>
 
-//Program counter reset
-void(* resetFunc) (void) = 0;
+// ========== PARAMETRES UTILSATEUR - USER SETTINGS ==========
 
-// ========== DEFINITION DES BROCHES ARDUINO ==========
+//Broche CS Arduino Nano pour carte Ethernet ENC28J60 - Arduino Nano CS Pin for ENC28J60 Ethernet Board
+#define CS_Pin 10
 
-#define CS_Pin 10 //Broche CS Arduino Nano pour carte Ethernet ENC28J60
-#define CAPTEUR_1_PIN 2
-#define CAPTEUR_2_PIN 3
-#define CAPTEUR_3_PIN 4
+//Nombre de capteurs (16 MAX) - Number of sensors (16 MAX)
+#define NB_Capteur 3
 
-// ========== CONFIG CARTE RESEAU ==========
+//Broches d'entrée des capteurs - Sensor input pins
+const uint8_t capteurPinArray[] = { 2, 3, 4};
 
-static uint8_t myip[] = { 192, 168, 1, 123 };// Adresse IP de la carte machine
-static uint8_t gwip[] = { 192, 168, 1, 1 };// Adresse de la passerelle
+
+// ========== CONFIGURATION CARTE RESEAU - NETWORK CARD CONFIGURATION ==========
+
+static uint8_t myip[] = { 192, 168, 1, 123 };// Adresse IP de la carte machine - Machine board IP address
+static uint8_t gwip[] = { 192, 168, 1, 1 };// Adresse de la passerelle - Gateway address
 static uint8_t myDNS[] = { 8, 8, 8, 8 };// DNS
-static uint8_t mask[] = { 255, 255, 255, 0 };// Masque de sous réseau
-uint16_t portMy = 5123;// Port de la carte machine
+static uint8_t mask[] = { 255, 255, 255, 0 };// Masque de sous réseau - subnet mask
+uint16_t portMy = 5123;// Port de la carte machine - Machine board port
 
-//Adresse Ip et port d'AOG
+//Adresse Ip et port d'AOG - Ip address and port of AOG
 static uint8_t ipDestination[] = {192, 168, 1, 255};
 uint16_t portDestination = 9999;
 
-// ethernet mac address - must be unique on your network
+// Adresse mac de la carte, doit être unique sur votre réseau - Mac address of the card, must be unique on your network
 static uint8_t mymac[] = { 0x00, 0x00, 0x56, 0x00, 0x00, 0x7B };
 
-uint8_t Ethernet::buffer[200]; // udp send and receive buffer
+uint8_t Ethernet::buffer[200]; // Tampon d'envoi et de réception udp - Udp send and receive buffer
 
-//========== CONFIG de L'INO ==========
+//========== CONFIGURATION de L'INO - INO CONFIGURATION ==========
 
-// Gestion du temps en millisecondes
+// Gestion du temps en millisecondes - Time management in milliseconds
 const uint8_t LOOP_TIME = 200; // 5hz
 uint32_t lastTime = LOOP_TIME;
 uint32_t currentTime = LOOP_TIME;
-//uint32_t fifthTime = 0;
-uint16_t count = 0;
 
 // Gestion du temps de communication entre AOG et la carte machine
 uint8_t watchdogTimer = 20; // Max 20*200ms = 4s (LOOP TIME) si plus de 20 déclaration de perte de communication avec le module
@@ -43,14 +47,23 @@ uint8_t serialResetTimer = 0; // Vidange de la mémoire tampon
 
 
 // Parsing PGN
-uint8_t PGN[] = { 128, 129, 123, 234, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0xCC };
-int8_t PGN_Size = sizeof(PGN) - 1;
+uint8_t PGN_234[] = { 128, 129, 123, 234, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0xCC };
+int8_t PGN_234_Size = sizeof(PGN_234) - 1;
 
 // hello from AgIO
 uint8_t helloFromMachine[] = {128, 129, 123, 123, 2, 1, 1, 71};
 
+uint8_t capteurOn_Grp_0 = 0, capteurOn_Grp_1 = 0, capteurOff_Grp_0 = 0, capteurOff_Grp_1 = 0;
+
+//Program counter reset
+void(* resetFunc) (void) = 0;
+
 void setup() {
   Serial.begin(38400);  //set up communication
+  
+  for (int8_t i=0; i < NB_Capteur; i++){
+	  pinMode(capteurPinArray[i], INPUT_PULLUP);
+  }
 
   if (ether.begin(sizeof Ethernet::buffer, mymac, CS_Pin) == 0)
     Serial.println(F("Failed to access Ethernet controller"));
@@ -86,22 +99,45 @@ void loop() {
     {
       //section = 0;
     }
-    //section = 7;
-    PGN[9]=7;
-    PGN[10] = 248;
-    PGN[11] = 255;
-    PGN[12]=0;
+	
+	// Collecte de l'état les capteurs
+	
+	for (int8_t i = 0; i < NB_Capteur && i < 8; i++ ){
+		if (!digitalRead(capteurPinArray[i])){
+			bitSet(capteurOn_Grp_0, i);
+			bitClear(capteurOff_Grp_0, i);
+		}
+		else {
+			bitSet(capteurOff_Grp_0, i);
+			bitClear(capteurOn_Grp_0, i);
+		}
+	}
+	
+	for (int8_t i = 0; i < NB_Capteur && i < 8; i++ ){
+		if (digitalRead(capteurPinArray[i] + 8)){
+			bitSet(capteurOn_Grp_1, i + 8);
+			bitClear(capteurOff_Grp_1, i+8);
+		}
+		else {
+			bitSet(capteurOff_Grp_1, i+8);
+			bitClear(capteurOn_Grp_1, i+8);
+		}
+	}
+	
+    PGN_234[9] = capteurOn_Grp_0;
+    PGN_234[10] = capteurOff_Grp_0;
+    PGN_234[11] = capteurOn_Grp_1;
+    PGN_234[12] = capteurOff_Grp_1;
     
     //checksum
     int16_t CK_A = 0;
-    for (uint8_t i = 2; i < PGN_Size; i++)
+    for (uint8_t i = 2; i < PGN_234_Size; i++)
     {
-      CK_A = (CK_A + PGN[i]);
+      CK_A = (CK_A + PGN_234[i]);
     }
-    PGN[PGN_Size] = CK_A;
+    PGN_234[PGN_234_Size] = CK_A;
 
-    //off to AOG
-    ether.sendUdp(PGN, sizeof(PGN), portMy, ipDestination, portDestination);
+    ether.sendUdp(PGN_234, sizeof(PGN_234), portMy, ipDestination, portDestination);
   }
   delay(1);
 
