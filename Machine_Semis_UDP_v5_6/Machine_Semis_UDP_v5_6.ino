@@ -1,6 +1,12 @@
+t
 // Controleur de semis pour AgOpenGPS - Seed monitor for AgOpenGPS
+// Version : 1.3 - 22/01/2023
 // Author: Damien Loisel
 // Copyright: GPL V2
+
+//Controleur Rotation pour Monosem Meca2000
+//Pignon B3 - Disque 5 trous : 5 x 18.5cm = 92.5cm / tour
+
 
 #include "EtherCard_AOG.h"
 #include <IPAddress.h>
@@ -13,8 +19,17 @@
 //Nombre de capteurs (16 MAX) - Number of sensors (16 MAX)
 #define NB_Capteur 3
 
+//Type de capteur - Sensor type
+// - 1 : Capteur de rotation - Rotation sensor
+// - 2 : Switch
+#define TypeCapteur 1
+
+//Variable utilisée dans setup() pour appeler la fonction corrospondant au type de capteur - TypCapteur
+//Variable used in setup() to call the function corresponding to the type of sensor - TypCapteur
+//uint8_t capteur = 0;
+
 //Broches d'entrée des capteurs - Sensor input pins
-const uint8_t capteurPinArray[] = { 2, 3, 4};
+const uint8_t capteurPinArray[] = { 3, 4, 5};
 
 
 // ========== CONFIGURATION CARTE RESEAU - NETWORK CARD CONFIGURATION ==========
@@ -37,13 +52,19 @@ uint8_t Ethernet::buffer[200]; // Tampon d'envoi et de réception udp - Udp send
 //========== CONFIGURATION de L'INO - INO CONFIGURATION ==========
 
 // Gestion du temps en millisecondes - Time management in milliseconds
-const uint8_t LOOP_TIME = 200; // 5hz
+const uint8_t LOOP_TIME = 200; // 5hz - 200ms
 uint32_t lastTime = LOOP_TIME;
 uint32_t currentTime = LOOP_TIME;
 
 // Gestion du temps de communication entre AOG et la carte machine
 uint8_t watchdogTimer = 20; // Max 20*200ms = 4s (LOOP TIME) si plus de 20 déclaration de perte de communication avec le module
 uint8_t serialResetTimer = 0; // Vidange de la mémoire tampon
+
+//Gestion du controleur de rotation
+uint8_t interval_Rtimer = 20; // 20 x 200ms = 4 secondes temps de comptage
+uint8_t rotationTimer = 0; //Nombre d'impulsions
+uint8_t nbR_Grp_0[] = {0, 0, 0, 0, 0, 0, 0, 0};
+uint8_t nbR_Grp_1[] = {0, 0, 0, 0, 0, 0, 0, 0};
 
 
 // Parsing PGN
@@ -60,9 +81,9 @@ void(* resetFunc) (void) = 0;
 
 void setup() {
   Serial.begin(38400);  //set up communication
-  
-  for (int8_t i=0; i < NB_Capteur; i++){
-	  pinMode(capteurPinArray[i], INPUT_PULLUP);
+
+  for (int8_t i = 0; i < NB_Capteur; i++) {
+    pinMode(capteurPinArray[i], INPUT_PULLUP);
   }
 
   if (ether.begin(sizeof Ethernet::buffer, mymac, CS_Pin) == 0)
@@ -83,9 +104,10 @@ void setup() {
 void loop() {
   currentTime = millis(); // Temps maintenant
 
-  if (currentTime - lastTime >= LOOP_TIME)
+  if (currentTime - lastTime >= LOOP_TIME) // Si maintenant - avant plus grand ou égale à 200
   {
-    lastTime = currentTime;
+    lastTime = currentTime;// Avant = maintenant
+
     //If connection lost to AgOpenGPS, the watchdog will count up
     if (watchdogTimer++ > 250) watchdogTimer = 20;
     //clean out serial buffer to prevent buffer overflow
@@ -95,40 +117,71 @@ void loop() {
       serialResetTimer = 0;
     }
 
-    if (watchdogTimer > 20)
+    //Gestion des capteurs
+    if (TypeCapteur == 1) //Rotation
     {
-      //section = 0;
+      Serial.println("Capteur de rotation");
+      if (rotationTimer < interval_Rtimer)
+      {
+        for (int8_t i = 0; i < NB_Capteur && i < 8; i++ ) {
+          if (!digitalRead(capteurPinArray[i])) {
+            nbR_Grp_0[i]++;
+            Serial.print("Capteur ");
+            Serial.print(i);
+            Serial.print(" : ");
+            Serial.println(nbR_Grp_0[i]);
+          }
+        }
+        rotationTimer++;
+      }
+      else {
+        rotationTimer = 0;
+        for (int8_t i = 0; i < NB_Capteur && i < 8; i++ ) {
+          if (nbR_Grp_0[i] > 0 && nbR_Grp_0[i] < 8)
+          {
+            bitSet(capteurOn_Grp_0, i);
+            bitClear(capteurOff_Grp_0, i);
+          }
+          else {
+            bitSet(capteurOff_Grp_0, i);
+            bitClear(capteurOn_Grp_0, i);
+          }
+          nbR_Grp_0[i] = 0;
+        }
+      }
     }
-	
-	// Collecte de l'état les capteurs
-	
-	for (int8_t i = 0; i < NB_Capteur && i < 8; i++ ){
-		if (!digitalRead(capteurPinArray[i])){
-			bitSet(capteurOn_Grp_0, i);
-			bitClear(capteurOff_Grp_0, i);
-		}
-		else {
-			bitSet(capteurOff_Grp_0, i);
-			bitClear(capteurOn_Grp_0, i);
-		}
-	}
-	
-	for (int8_t i = 0; i < NB_Capteur && i < 8; i++ ){
-		if (digitalRead(capteurPinArray[i] + 8)){
-			bitSet(capteurOn_Grp_1, i + 8);
-			bitClear(capteurOff_Grp_1, i+8);
-		}
-		else {
-			bitSet(capteurOff_Grp_1, i+8);
-			bitClear(capteurOn_Grp_1, i+8);
-		}
-	}
-	
+
+    if (TypeCapteur == 2)//Switch
+    {
+      Serial.println("Capteur switch");
+      for (int8_t i = 0; i < NB_Capteur && i < 8; i++ ) {
+        if (!digitalRead(capteurPinArray[i])) {
+          bitSet(capteurOn_Grp_0, i);
+          bitClear(capteurOff_Grp_0, i);
+        }
+        else {
+          bitSet(capteurOff_Grp_0, i);
+          bitClear(capteurOn_Grp_0, i);
+        }
+      }
+
+      for (int8_t i = 8; i < NB_Capteur && i < 16; i++ ) {
+        if (!digitalRead(capteurPinArray[i])) {
+          bitSet(capteurOn_Grp_1, i - 8);
+          bitClear(capteurOff_Grp_1, i - 8);
+        }
+        else {
+          bitSet(capteurOff_Grp_1, i - 8);
+          bitClear(capteurOn_Grp_1, i - 8);
+        }
+      }
+    }
+
     PGN_234[9] = capteurOn_Grp_0;
     PGN_234[10] = capteurOff_Grp_0;
     PGN_234[11] = capteurOn_Grp_1;
     PGN_234[12] = capteurOff_Grp_1;
-    
+
     //checksum
     int16_t CK_A = 0;
     for (uint8_t i = 2; i < PGN_234_Size; i++)
@@ -154,7 +207,6 @@ void udpSteerRecv(uint16_t dest_port, uint8_t src_ip[IP_LEN], uint16_t src_port,
     {
       if (udpData[7] == 1)
       {
-        //relay = relay - 255;
         watchdogTimer = 0;
       }
 
